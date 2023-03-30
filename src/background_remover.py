@@ -15,15 +15,23 @@ class BackgroundRemover:
 
         cv2.namedWindow("background-training")
         cv2.imshow("background-training", self.bg)
-        frame_count = 0
+
+        # get video length
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        wait_interval = int(1000 / frame_count)
+        if wait_interval == 0:
+            wait_interval = 1
+        current_frame = 0
         while cap.isOpened():
-            frame_count += 1
             ret, frame = cap.read()
             if not ret:
                 break
+            current_frame += 1
             cv2.accumulate(frame, self.bg)
-            cv2.imshow("background-training", (self.bg / frame_count).astype(np.uint8))
-            cv2.waitKey(5)
+            cv2.imshow("background-training", (self.bg / current_frame).astype(np.uint8))
+            cv2.setWindowTitle("background-training", f"Training background model: {current_frame} / {frame_count}")
+
+            cv2.waitKey(wait_interval)
 
         cap.release()
         self.bg = (self.bg / frame_count).astype(np.uint8)

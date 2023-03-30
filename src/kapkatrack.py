@@ -104,7 +104,7 @@ if __name__ == "__main__":
             print(f"Frame {drops_tracker.frame_i}: Found {len(drops)} drops, tracked {len(drops_tracker.trackers)} drops, active {len(drops_tracker.get_active_trackers())}")
             cv2.imshow("frame", frame)
             cv2.setWindowTitle("frame", f"Video: {video_file}, frame: {drops_tracker.frame_i} / {int(video.get(cv2.CAP_PROP_FRAME_COUNT))}")
-            cv2.waitKey(10)
+            cv2.waitKey(1)
             
         drops_manager.save()
         video.release()
