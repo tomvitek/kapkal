@@ -22,7 +22,7 @@ if __name__ == "__main__":
     argparser.add_argument("--brightness", help="Brightness", type=float, default=1)
     argparser.add_argument("--contrast", help="Contrast", type=float, default=3)
     argparser.add_argument("--blur", help="Blur", type=float, default=3)
-
+    argparser.add_argument("--fast", help="Fast mode, disables several demonstration windows", action="store_true")
     args = argparser.parse_args()
 
     video_files = args.video_files
@@ -31,9 +31,11 @@ if __name__ == "__main__":
     brightness = args.brightness
     contrast = args.contrast
     blur = args.blur
+    fast = args.fast
 
     for video_file in video_files:
-        background_remover = BackgroundRemover()
+        background_remover = BackgroundRemover(not fast)
+        print("Training background remover...")
         background_remover.train(video_file)
 
         video = cv2.VideoCapture(video_file)
@@ -42,7 +44,7 @@ if __name__ == "__main__":
         if ret == False:
             print("Error reading video")
             exit(1)
-        while True:
+        while True and not fast:
             ret, frame = video.read()
             if ret == False:
                 break
@@ -75,6 +77,8 @@ if __name__ == "__main__":
         drops_tracker = DropsTracker(frame, init_drops, threshMin, threshMax, frame.shape[:2])
         drops_manager = DropsManager(video_file)
 
+        if fast:
+            cv2.namedWindow("frame", cv2.WINDOW_AUTOSIZE)
         while True:
             ret, frame = video.read()
             if ret == False:
@@ -93,11 +97,14 @@ if __name__ == "__main__":
                 cv2.rectangle(frame, bbox[0:2], (bbox[0]+bbox[2], bbox[1]+bbox[3]), (0, 0, 255), 2)
 
             # draw bounding boxes - tracked drops
-            for drop_tracker in drops_tracker.get_active_trackers():
+            for i, drop_tracker in enumerate(drops_tracker.trackers):
+                if drop_tracker.active == False:
+                    continue
                 bbox = drop_tracker.bbox
                 pt1 = (int(bbox[0]), int(bbox[1]))
                 pt2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
                 cv2.rectangle(frame, pt1, pt2, (0, 255, 0), 2)
+                cv2.addText(frame, f"{i}", pt1, nameFont="Arial", color=(0, 255, 0))
             
             drops_manager.log_drops(drops_tracker.frame_i, drops_tracker.trackers)
 

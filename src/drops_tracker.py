@@ -5,14 +5,43 @@ import cv2
 import numpy as np
 from drop_detector import find_drops
 
-DROP_PX_MARGIN = 8
+DROP_PX_MARGIN = 10
+DROP_MAX_FRAME_MOVEMENT_PX = np.array((5, 20))
+MAX_ACTIVE_DROPS = 50
+TRACKER_MIN_STD = 5
+TRACKER_MIN_MAXIMUM = 50
 
 @dataclass
 class DropTracker:
     bbox: Tuple[int, int, int, int]
-    tracker: cv2.TrackerMIL
     init_frame: int
     active: bool
+
+    def track(self, frame: cv2.UMat):
+        # Find center of brightness in currenty bbox
+        bbox_img = self.get_img(frame)
+        bbox_img = cv2.cvtColor(bbox_img, cv2.COLOR_BGR2GRAY)
+        
+        # Find center of brightness
+        x_sum = np.sum(bbox_img, axis=0)
+        y_sum = np.sum(bbox_img, axis=1)
+        x_avg = np.average(np.arange(len(x_sum)), weights=x_sum)
+        y_avg = np.average(np.arange(len(y_sum)), weights=y_sum)
+        
+        # Update bbox
+        self.bbox[0] = int(self.bbox[0] + x_avg - self.bbox[2]/2)
+        self.bbox[1] = int(self.bbox[1] + y_avg - self.bbox[3]/2)
+        self.bbox = limit_bbox_to_frame(self.bbox, frame.shape[:2])
+
+        # Check that drop is still visible
+        bbox_img = self.get_img(frame)
+        drop_std = cv2.meanStdDev(bbox_img)[1][0][0]
+        drop_max = bbox_img.max()
+        if drop_std < TRACKER_MIN_STD or drop_max < TRACKER_MIN_MAXIMUM:
+            self.active = False
+
+    def get_img(self, frame: cv2.UMat):
+        return frame[self.bbox[1]:self.bbox[1]+self.bbox[3], self.bbox[0]:self.bbox[0]+self.bbox[2]]
 
 class DropsTracker:
     def __init__(self, init_frame, drops, thresh_min, thresh_max, vid_resolution: Tuple[int, int]) -> None:
@@ -21,9 +50,7 @@ class DropsTracker:
 
         for drop in drops:
             drop_bbox = self.detected_drop_to_bbox(drop, vid_resolution)
-            tracker = cv2.TrackerMIL_create()
-            tracker.init(init_frame, drop_bbox)
-            drop_tracker = DropTracker(drop_bbox, tracker, 0, True)
+            drop_tracker = DropTracker(drop_bbox, 0, True)
             self.trackers.append(drop_tracker)
 
         self.thresh_min = thresh_min
@@ -31,53 +58,36 @@ class DropsTracker:
         
 
     def track(self, frame: cv2.UMat):
-        self.frame_i += 1
-        grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        self.frame_i += 1   
 
-        for drop_tracker in self.get_active_trackers():
-            ok, bbox = drop_tracker.tracker.update(frame)
-
-            # check if drop is still visible
-            drop_frame = grey[int(bbox[1]):int(bbox[1]+bbox[3]), int(bbox[0]):int(bbox[0]+bbox[2])]
-            drop_std = cv2.meanStdDev(drop_frame)[1][0][0]
-            if drop_std < 5:
-                ok = False
-            if not ok:
-                drop_tracker.active = False
-                continue
-            
-            drop_tracker.bbox = bbox
-
-        # Add/reset new drops
+        # Find new drops
         detected_drops = find_drops(frame, self.thresh_min, self.thresh_max)
-        for detected_drop in detected_drops:
-            drop_tracker = self.get_drop_tracker(detected_drop)
-            if drop_tracker is None:
-                bbox = self.detected_drop_to_bbox(detected_drop, frame.shape[:2])
-                tracker = cv2.TrackerMIL_create()
-                tracker.init(frame, bbox)
-                drop_tracker = DropTracker(bbox, tracker, self.frame_i, True)
-                self.trackers.append(drop_tracker)
-            else:
-                tracked_bbox = self.detected_drop_to_bbox(detected_drop, frame.shape[:2])
-                new_tracker = cv2.TrackerMIL_create()
-                new_tracker.init(frame, tracked_bbox)
-                drop_tracker.tracker = new_tracker
+        if len(detected_drops) > MAX_ACTIVE_DROPS:
+            # Bad frame, disable all trackers and skip
+            for tracker in self.trackers:
+                tracker.active = False
+            return
+        
+        # Update trackers. This also removes trackers that no longer see their drops
+        for tracker in self.get_active_trackers():
+            tracker.track(frame)
 
-        # Remove overlapping trackers
-        for drop_tracker in self.trackers:
-            for other_drop_tracker in self.trackers:
-                if drop_tracker == other_drop_tracker:
-                    continue
-                bbox = drop_tracker.bbox
-                other_bbox = other_drop_tracker.bbox
-                other_drop_center = (other_bbox[0] + other_bbox[2] / 2, other_bbox[1] + other_bbox[3] / 2)
-                if (other_drop_center[0] > bbox[0] and other_drop_center[0] < bbox[0] + bbox[2] and
-                    other_drop_center[1] > bbox[1] and other_drop_center[1] < bbox[1] + bbox[3]):
-                    if drop_tracker.init_frame > other_drop_tracker.init_frame:
-                        drop_tracker.active = False
-                    else:
-                        other_drop_tracker.active = False
+        for tracker in self.get_active_trackers():
+            closest_drop, closest_pos_delta = self._find_nearest_drop(tracker, detected_drops)
+
+            if np.all(np.abs(closest_pos_delta) < DROP_MAX_FRAME_MOVEMENT_PX):
+                # If the closest drop is close enough, update tracker's bbox
+                tracker.bbox = self.detected_drop_to_bbox(closest_drop, frame.shape)
+                detected_drops.pop(detected_drops.index(closest_drop))
+    
+        
+        # Add new drops
+        for detected_drop in detected_drops:
+            drop_bbox = self.detected_drop_to_bbox(detected_drop, frame.shape)
+            drop_tracker = DropTracker(drop_bbox, self.frame_i, True)
+            self.trackers.append(drop_tracker)
+
+
                     
     def get_drop_tracker(self, drop: Tuple[int, int, int, int]):
         drop_center = (drop[0] + drop[2] / 2, drop[1] + drop[3] / 2)
@@ -92,6 +102,34 @@ class DropsTracker:
 
     def detected_drop_to_bbox(self, drop: Tuple[int, int, int, int], frame_size: Tuple[int, int]):
         bbox = [drop[0] - DROP_PX_MARGIN, drop[1] - DROP_PX_MARGIN, drop[2] + DROP_PX_MARGIN * 2, drop[3] + DROP_PX_MARGIN * 2]
+        bbox = limit_bbox_to_frame(bbox, frame_size)
+        return bbox
+
+    def get_active_trackers(self):
+        return [drop_tracker for drop_tracker in self.trackers if drop_tracker.active]
+    
+    def _distance(self, drop1_bbox: Tuple[int, int, int, int], drop2_bbox: Tuple[int, int, int, int]):
+        drop1_center = np.array((drop1_bbox[0] + drop1_bbox[2] / 2, drop1_bbox[1] + drop1_bbox[3] / 2))
+        drop2_center = np.array((drop2_bbox[0] + drop2_bbox[2] / 2, drop2_bbox[1] + drop2_bbox[3] / 2))
+        drop_delta = drop1_center - drop2_center
+        drop_r = np.sqrt(drop_delta[0] ** 2 + drop_delta[1] ** 2)
+        return drop_r, drop_delta
+    
+    def _find_nearest_drop(self, tracker: DropTracker, detected_drops: List[Tuple[int, int, int, int]]):
+        closest_drop = None
+        closest_dist_score = 999999999
+        closest_pos_delta = (999999999, 999999999)
+        for detected_drop in detected_drops:
+            dist, pos_delta = self._distance(detected_drop, tracker.bbox)
+            dist_score = dist #np.sqrt((pos_delta[0] * 2)**2 + pos_delta[1]**2)
+            if dist_score < closest_dist_score:
+                closest_drop = detected_drop
+                closest_dist_score = dist_score
+                closest_pos_delta = pos_delta
+        
+        return closest_drop, closest_pos_delta
+
+def limit_bbox_to_frame(bbox: List[int], frame_size: Tuple[int, int]):
         if bbox[0] < 0:
             bbox[0] = 0
         if bbox[0] + bbox[2] > frame_size[1]:
@@ -101,10 +139,4 @@ class DropsTracker:
         if bbox[1] + bbox[3] > frame_size[0]:
             bbox[3] = frame_size[0] - bbox[1]
         return bbox
-
-    def get_active_trackers(self):
-        return [drop_tracker for drop_tracker in self.trackers if drop_tracker.active]
-        
-
-
 
