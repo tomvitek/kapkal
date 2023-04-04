@@ -8,7 +8,7 @@ from drop_detector import find_drops
 DROP_PX_MARGIN = 10
 DROP_MAX_FRAME_MOVEMENT_PX = np.array((5, 20))
 MAX_ACTIVE_DROPS = 50
-TRACKER_MIN_STD = 5
+TRACKER_MIN_STD = 7
 TRACKER_MIN_MAXIMUM = 50
 
 @dataclass
