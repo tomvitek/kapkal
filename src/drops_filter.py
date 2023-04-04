@@ -71,15 +71,14 @@ class DropsFilter:
         smoothed_data.vy = np.diff(smoothed_data.y, axis=0)
         return smoothed_data
 
-    def find_drops_inversion_frame(self, drops_data: DropsData, diff_frame_count=5, min_frame=20) -> Tuple[int, DropsData]:
+    def find_drops_inversion_frames(self, drops_data: DropsData, diff_frame_count=5, min_frame=20) -> List[Tuple[int, DropsData]]:
         """Find voltage inversion frame and suitable drops"""
+        MIN_SPEED_DELTA = 20
+        MIN_INVERTED_COUNT = 2
         # find voltage inversion frame and suitable drops
-        inversion_frame = -1
-        max_inverted_count = 0
-        max_speed_delta = 0
-        final_inverted_mask: np.ndarray
-        final_not_nan_mask: np.ndarray
         min_frame = diff_frame_count * 2 if min_frame < diff_frame_count * 2 else min_frame
+
+        inversion_frames_list = []
 
         for i in range(min_frame, drops_data.vy.shape[0] - diff_frame_count):
             not_nan_mask = np.logical_not(np.isnan(drops_data.vy[i, :]))
@@ -112,24 +111,29 @@ class DropsFilter:
             inverted_count = np.sum(inverted_mask)
             speed_delta = np.abs(
                 drops_data.vy[i, not_nan_mask][inverted_mask] - drops_data.vy[i - diff_frame_count, not_nan_mask][inverted_mask])
-            if np.sum(speed_delta) > max_speed_delta or inverted_count > max_inverted_count:
-                max_inverted_count = np.sum(inverted_count)
+            
+            if np.sum(speed_delta) >= MIN_SPEED_DELTA and inverted_count >= MIN_INVERTED_COUNT:
                 inversion_frame = i - int(diff_frame_count / 2)
-                max_speed_delta = np.sum(speed_delta)
-                final_inverted_mask = inverted_mask
-                final_not_nan_mask = not_nan_mask
+                filtered_drops_data = DropsData(
+                    frames=drops_data.frames,
+                    x=drops_data.x[:, not_nan_mask][:, inverted_mask],
+                    y=drops_data.y[:, not_nan_mask][:, inverted_mask],
+                    vy=drops_data.vy[:, not_nan_mask][:, inverted_mask]
+                )
+                inversion_frames_list.append((inversion_frame, filtered_drops_data))
 
-        if inversion_frame == -1:
-            print("Inversion frame not found")
-            return -1, np.empty(0)
+            # Remove inversion frames next to each other
+            if len(inversion_frames_list) > 1:
+                for j in range(len(inversion_frames_list) - 1):
+                    if inversion_frames_list[j + 1][0] - inversion_frames_list[j][0] < 5:
+                        if len(inversion_frames_list[j][1].vy) > len(inversion_frames_list[j + 1][1].vy):
+                            inversion_frames_list.pop(j + 1)
+                        else:
+                            inversion_frames_list.pop(j)
+                        
+                        j -= 1
 
-        filtered_drops_data = DropsData(
-            frames=drops_data.frames,
-            x=drops_data.x[:, final_not_nan_mask][:, final_inverted_mask],
-            y=drops_data.y[:, final_not_nan_mask][:, final_inverted_mask],
-            vy=drops_data.vy[:, final_not_nan_mask][:, final_inverted_mask]
-        )
-        return inversion_frame, filtered_drops_data
+        return inversion_frames_list
 
     def analyze_drops(self,
                       filtered_drops_data: DropsData, 

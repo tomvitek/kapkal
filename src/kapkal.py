@@ -24,6 +24,7 @@ if __name__ == "__main__":
                         help="Standard deviation threshold for x values (default: 10)")
     parser.add_argument("--save-plots", action="store_true",
                         help="Save plots to pdf files")
+    
     args = parser.parse_args()
     speed = args.speed
     video_files = args.video_files
@@ -75,51 +76,58 @@ if __name__ == "__main__":
         #     plt.pause(speed)
         filtered_drops = drops_data
 
-        inversion_frame, filtered_drops = drops_filter.find_drops_inversion_frame(
-            filtered_drops, diff_frame_count=smooth_factor)
-
+        inversion_frames_list = drops_filter.find_drops_inversion_frames(filtered_drops, diff_frame_count=smooth_factor)
+        inversion_frames = [inversion_frame for (inversion_frame, filtered_drops) in inversion_frames_list]
         plt.cla()
         plt.plot(filtered_drops.frames, filtered_drops.y)
         plt.show(block=False)
-        if speed > 0:
-            plt.pause(speed)
-
-        drops = drops_filter.analyze_drops(
-            filtered_drops,
-            inversion_frame
-        )
-
         # plt.clf()
         # plt.plot(filtered_drops.frames, filtered_drops.y)
-        plt.axvline(inversion_frame, color="red", linestyle="--")
+        for inversion_frame in inversion_frames:
+            plt.axvline(inversion_frame, color="red", linestyle="--")
         plt.show(block=False)
         if speed > 0:
             plt.pause(speed)
-        # Lock plot ax limits
-        ax = plt.gca()
-        ax.set_ylim(ax.get_ylim())
-        ax.set_xlim(ax.get_xlim())
-        for drop in drops:
-            plt.plot(filtered_drops.frames[:inversion_frame], drop.vy1 * filtered_drops.frames[:inversion_frame] +
-                     drop.intercept1, color="green", linestyle="--", linewidth=1)
-            plt.plot(filtered_drops.frames[inversion_frame:], drop.vy2 * filtered_drops.frames[inversion_frame:] +
-                     drop.intercept2, color="green", linestyle="--", linewidth=1)
-        plt.xlabel("Frame")
-        plt.ylabel("Y [px]")
-        if save_plots:
-            plt.savefig(f"{video_file}_plot.pdf")
-        plt.show(block=False)
-        if speed > 0:
-            plt.pause(speed)
+
+        all_drops = []
+        for (inversion_frame, filtered_drops) in inversion_frames_list:
+
+            drops = drops_filter.analyze_drops(
+                filtered_drops,
+                inversion_frame
+            )
+
+            # Lock plot ax limits
+            plt.cla()
+            for i in range(0, filtered_drops.vy.shape[1]):
+                plt.plot(filtered_drops.frames, filtered_drops.y[:, i])
+            # plt.plot(filtered_drops.frames, filtered_drops.vy)
+            ax = plt.gca()
+            ax.set_ylim(ax.get_ylim())
+            ax.set_xlim(ax.get_xlim())
+            for drop in drops:
+                plt.plot(filtered_drops.frames[:inversion_frame], drop.vy1 * filtered_drops.frames[:inversion_frame] +
+                        drop.intercept1, color="green", linestyle="--", linewidth=1)
+                plt.plot(filtered_drops.frames[inversion_frame:], drop.vy2 * filtered_drops.frames[inversion_frame:] +
+                        drop.intercept2, color="green", linestyle="--", linewidth=1)
+            plt.xlabel("Frame")
+            plt.ylabel("Y [px]")
+            if save_plots:
+                plt.savefig(f"{video_file}_plot_{inversion_frame}.pdf")
+            plt.show(block=False)
+            if speed > 0:
+                plt.pause(speed)
+            
+            all_drops.extend(drops)
 
         # Save measured drops data
         drops_df = pd.DataFrame()
-        drops_df["v1"] = [drop.vy1 for drop in drops]
-        drops_df["v2"] = [drop.vy2 for drop in drops]
+        drops_df["v1"] = [drop.vy1 for drop in all_drops]
+        drops_df["v2"] = [drop.vy2 for drop in all_drops]
         drops_df.to_csv(f"{video_file}_drops.csv", index=False)
 
-        print("Drops:", len(drops))
-        total_drops += len(drops)
+        print("Drops:", len(all_drops))
+        total_drops += len(all_drops)
 
     print("Total drops found:", total_drops)
     print("Filtered - x std:", drops_filter.filtered_x_std_count)
